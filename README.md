@@ -1,5 +1,4 @@
+https://github.com/user-attachments/assets/b0168c58-f14f-41f0-9ace-3bb44b6f2ac2
 
-https://github.com/user-attachments/assets/757c4bcc-e8c2-43bb-a317-c75ea85cf8e9
-
-The Dock auto arranger thats actually doesnt get in your way.. 
+The Dock auto arranger for opened apps sends each app to their designated place.
 
