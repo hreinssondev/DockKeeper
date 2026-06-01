@@ -5,6 +5,11 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class DockMoverModel: ObservableObject {
+    private enum SettingsWindowDefaultFrame {
+        static let minContentSize = CGSize(width: 720, height: 320)
+        static let contentHeight: CGFloat = 320
+    }
+
     @Published var isEnabled: Bool {
         didSet {
             persist()
@@ -24,20 +29,26 @@ final class DockMoverModel: ObservableObject {
     @Published private(set) var savedEmptySlotSizeForAll: DockEmptySlotSize = .full
     @Published private(set) var draftEmptySlotSizeForAll: DockEmptySlotSize = .full
     @Published private(set) var dockRestartMode: DockRestartMode = .fast
+    @Published private(set) var settingsShortcut: DockMoverShortcut = .settingsDefault
     @Published private(set) var canUndo = false
 
     private let service = DockLayoutService()
     private let defaults = UserDefaults.standard
+    private let shortcutRegistrar = GlobalShortcutRegistrar()
     private var cancellables: [NSObjectProtocol] = []
     private var applyTask: Task<Void, Never>?
+    private var settingsWindowOpener: (() -> Void)?
     private var recentlyQuitBundleIdentifiers: [String: Date] = [:]
     private var undoStack: [UndoState] = []
+    private var draftSlotDragState: DraftSlotDragState?
+    private var didScheduleDefaultSettingsWindowFrame = false
     private var isRestoring = true
     private let recentlyQuitSuppressionInterval: TimeInterval = 300
     private let undoLimit = 50
 
     init() {
         isEnabled = defaults.bool(forKey: DefaultsKey.isEnabled)
+        settingsShortcut = loadSettingsShortcut()
         dockRestartMode = loadDockRestartMode(forKey: DefaultsKey.dockRestartMode) ?? .fast
         if defaults.integer(forKey: DefaultsKey.dockRestartModeDefaultVersion) < 1 {
             dockRestartMode = .fast
@@ -46,8 +57,18 @@ final class DockMoverModel: ObservableObject {
         loadSlots()
         refreshRunningApps()
         startWatchingWorkspace()
+        shortcutRegistrar.action = { [weak self] in
+            Task { @MainActor in
+                self?.openSettingsWindowFromShortcut()
+            }
+        }
+        let shortcutStatus = shortcutRegistrar.register(settingsShortcut)
         isRestoring = false
         persist()
+
+        if shortcutStatus != noErr {
+            status = "Could not register settings shortcut \(settingsShortcut.displayText)"
+        }
 
         if isEnabled {
             scheduleApply(reason: "Started DockMover")
@@ -94,22 +115,110 @@ final class DockMoverModel: ObservableObject {
     }
 
     var unmanagedRunningApps: [RunningDockApp] {
-        let managedIDs = Set(savedSlots.map(\.bundleIdentifier))
+        let managedIDs = Set(draftSlots.map(\.bundleIdentifier))
         return runningApps.filter { !managedIDs.contains($0.bundleIdentifier) }
+    }
+
+    func setSettingsWindowOpener(_ opener: @escaping () -> Void) {
+        settingsWindowOpener = opener
     }
 
     func showSettingsWindow(_ openWindow: OpenWindowAction) {
         openWindow(id: "settings")
+        bringSettingsWindowForward()
+    }
+
+    func configureSettingsWindow(_ window: NSWindow) {
+        window.isRestorable = false
+        window.contentMinSize = SettingsWindowDefaultFrame.minContentSize
+
+        guard !didScheduleDefaultSettingsWindowFrame else {
+            return
+        }
+
+        didScheduleDefaultSettingsWindowFrame = true
+        Task {
+            for delay in [0, 40, 120, 260] {
+                if delay > 0 {
+                    try? await Task.sleep(for: .milliseconds(delay))
+                }
+
+                applyDefaultSettingsWindowFrame(to: window)
+            }
+        }
+    }
+
+    func setSettingsShortcut(_ shortcut: DockMoverShortcut) {
+        guard shortcut != settingsShortcut else {
+            status = "Settings shortcut is already \(shortcut.displayText)"
+            return
+        }
+
+        let previousShortcut = settingsShortcut
+        let shortcutStatus = shortcutRegistrar.register(shortcut)
+        guard shortcutStatus == noErr else {
+            shortcutRegistrar.register(previousShortcut)
+            status = "Could not register \(shortcut.displayText)"
+            return
+        }
+
+        settingsShortcut = shortcut
+        persist()
+        status = "Settings shortcut saved as \(shortcut.displayText)"
+    }
+
+    private func openSettingsWindowFromShortcut() {
+        if let settingsWindowOpener {
+            settingsWindowOpener()
+        } else {
+            settingsWindow?.makeKeyAndOrderFront(nil)
+        }
+
+        bringSettingsWindowForward()
+    }
+
+    private func bringSettingsWindowForward() {
         NSApp.activate(ignoringOtherApps: true)
         Task {
             for _ in 0..<6 {
-                if fitSettingsWindowToScreenWidth() {
+                if let settingsWindow {
+                    configureSettingsWindow(settingsWindow)
+                    settingsWindow.makeKeyAndOrderFront(nil)
                     return
                 }
 
                 try? await Task.sleep(for: .milliseconds(40))
             }
         }
+    }
+
+    private func applyDefaultSettingsWindowFrame(to window: NSWindow) {
+        if window.isZoomed {
+            window.zoom(nil)
+        }
+
+        guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else {
+            window.setContentSize(
+                CGSize(width: SettingsWindowDefaultFrame.minContentSize.width, height: SettingsWindowDefaultFrame.contentHeight)
+            )
+            window.center()
+            return
+        }
+
+        window.setContentSize(
+            CGSize(width: visibleFrame.width, height: SettingsWindowDefaultFrame.contentHeight)
+        )
+
+        let frame = window.frame
+        window.setFrame(
+            NSRect(
+                x: visibleFrame.minX,
+                y: visibleFrame.midY - frame.height / 2,
+                width: visibleFrame.width,
+                height: frame.height
+            ),
+            display: true
+        )
     }
 
     func quit() {
@@ -129,8 +238,7 @@ final class DockMoverModel: ObservableObject {
         savedEmptySlotSizeForAll = draftEmptySlotSizeForAll
         clearUndoStack()
         persist()
-        status = "Saved fake Dock"
-        applyNow()
+        status = "Saved fake Dock; use Apply Saved to update the real Dock"
     }
 
     func restoreLatestBackup() {
@@ -172,6 +280,7 @@ final class DockMoverModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
+        panel.directoryURL = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first
         panel.prompt = "Add"
 
         guard panel.runModal() == .OK, let url = panel.url else {
@@ -218,36 +327,62 @@ final class DockMoverModel: ObservableObject {
 
     func moveDraftSlot(sourceID: UUID, before targetID: UUID) {
         guard sourceID != targetID,
+              let targetIndex = draftSlots.firstIndex(where: { $0.id == targetID }) else {
+            return
+        }
+
+        reorderDraftSlot(
+            sourceID: sourceID,
+            toOffset: targetIndex,
+            undoMode: .normal,
+            statusMessage: { _ in "Reordered fake Dock" }
+        )
+    }
+
+    func moveDraftSlotToEnd(sourceID: UUID) {
+        reorderDraftSlot(
+            sourceID: sourceID,
+            toOffset: draftSlots.endIndex,
+            undoMode: .normal,
+            statusMessage: { "Moved \($0.label) to the end of the fake Dock" }
+        )
+    }
+
+    func beginDraftSlotDrag(sourceID: UUID) {
+        guard draftSlots.contains(where: { $0.id == sourceID }) else {
+            return
+        }
+
+        draftSlotDragState = DraftSlotDragState(initialUndoState: currentUndoState)
+    }
+
+    func moveDraftSlotDuringDrag(sourceID: UUID, over targetID: UUID) {
+        guard sourceID != targetID,
               let sourceIndex = draftSlots.firstIndex(where: { $0.id == sourceID }),
               let targetIndex = draftSlots.firstIndex(where: { $0.id == targetID }) else {
             return
         }
 
-        let adjustedTargetIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
-        guard adjustedTargetIndex != sourceIndex else {
-            return
-        }
-
-        pushUndoState()
-        let movedSlot = draftSlots.remove(at: sourceIndex)
-        draftSlots.insert(movedSlot, at: adjustedTargetIndex)
-        persist()
-        status = "Reordered fake Dock"
+        let targetOffset = sourceIndex < targetIndex ? targetIndex + 1 : targetIndex
+        reorderDraftSlot(
+            sourceID: sourceID,
+            toOffset: targetOffset,
+            undoMode: .interactiveDrag,
+            statusMessage: { _ in "Reordered fake Dock" }
+        )
     }
 
-    func moveDraftSlotToEnd(sourceID: UUID) {
-        guard let sourceIndex = draftSlots.firstIndex(where: { $0.id == sourceID }) else {
-            return
-        }
-        guard sourceIndex != draftSlots.index(before: draftSlots.endIndex) else {
-            return
-        }
+    func moveDraftSlotToEndDuringDrag(sourceID: UUID) {
+        reorderDraftSlot(
+            sourceID: sourceID,
+            toOffset: draftSlots.endIndex,
+            undoMode: .interactiveDrag,
+            statusMessage: { "Moved \($0.label) to the end of the fake Dock" }
+        )
+    }
 
-        pushUndoState()
-        let movedSlot = draftSlots.remove(at: sourceIndex)
-        draftSlots.append(movedSlot)
-        persist()
-        status = "Moved \(movedSlot.label) to the end of the fake Dock"
+    func endDraftSlotDrag() {
+        draftSlotDragState = nil
     }
 
     func togglePermanent(_ slot: DockAppSlot) {
@@ -400,6 +535,7 @@ final class DockMoverModel: ObservableObject {
         defaults.set(savedEmptySlotSizeForAll.rawValue, forKey: DefaultsKey.emptySlotSizeForAll)
         defaults.set(draftEmptySlotSizeForAll.rawValue, forKey: DefaultsKey.draftEmptySlotSizeForAll)
         defaults.set(dockRestartMode.rawValue, forKey: DefaultsKey.dockRestartMode)
+        persistSettingsShortcut()
     }
 
     private func loadPersistedSlots(forKey key: String) -> [DockAppSlot]? {
@@ -426,6 +562,21 @@ final class DockMoverModel: ObservableObject {
         return DockRestartMode(rawValue: rawValue)
     }
 
+    private func loadSettingsShortcut() -> DockMoverShortcut {
+        guard let data = defaults.data(forKey: DefaultsKey.settingsShortcut),
+              let shortcut = try? JSONDecoder().decode(DockMoverShortcut.self, from: data) else {
+            return .settingsDefault
+        }
+
+        return shortcut
+    }
+
+    private func persistSettingsShortcut() {
+        if let data = try? JSONEncoder().encode(settingsShortcut) {
+            defaults.set(data, forKey: DefaultsKey.settingsShortcut)
+        }
+    }
+
     private var currentUndoState: UndoState {
         UndoState(
             draftSlots: draftSlots,
@@ -436,7 +587,10 @@ final class DockMoverModel: ObservableObject {
     }
 
     private func pushUndoState() {
-        let state = currentUndoState
+        pushUndoState(currentUndoState)
+    }
+
+    private func pushUndoState(_ state: UndoState) {
         guard undoStack.last != state else {
             return
         }
@@ -460,22 +614,53 @@ final class DockMoverModel: ObservableObject {
         canUndo = false
     }
 
-    private func fitSettingsWindowToScreenWidth() -> Bool {
-        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "settings" || $0.title == "DockMover" }),
-              let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else {
-            return false
+    @discardableResult
+    private func reorderDraftSlot(
+        sourceID: UUID,
+        toOffset rawTargetOffset: Int,
+        undoMode: DraftSlotReorderUndoMode,
+        statusMessage: (DockAppSlot) -> String
+    ) -> DockAppSlot? {
+        guard let sourceIndex = draftSlots.firstIndex(where: { $0.id == sourceID }) else {
+            return nil
         }
 
-        let height = max(window.frame.height, 420)
-        let y = min(max(window.frame.minY, visibleFrame.minY), visibleFrame.maxY - height)
-        let frame = NSRect(
-            x: visibleFrame.minX,
-            y: y,
-            width: visibleFrame.width,
-            height: height
-        )
-        window.setFrame(frame, display: true)
-        return true
+        let targetOffset = min(max(rawTargetOffset, draftSlots.startIndex), draftSlots.endIndex)
+        let adjustedTargetIndex = sourceIndex < targetOffset ? targetOffset - 1 : targetOffset
+        guard adjustedTargetIndex != sourceIndex else {
+            return nil
+        }
+
+        switch undoMode {
+        case .normal:
+            pushUndoState()
+        case .interactiveDrag:
+            pushDraftSlotDragUndoStateIfNeeded()
+        }
+
+        let movedSlot = draftSlots.remove(at: sourceIndex)
+        draftSlots.insert(movedSlot, at: adjustedTargetIndex)
+        persist()
+        status = statusMessage(movedSlot)
+        return movedSlot
+    }
+
+    private func pushDraftSlotDragUndoStateIfNeeded() {
+        if draftSlotDragState == nil {
+            draftSlotDragState = DraftSlotDragState(initialUndoState: currentUndoState)
+        }
+
+        guard draftSlotDragState?.didPushUndo == false,
+              let initialUndoState = draftSlotDragState?.initialUndoState else {
+            return
+        }
+
+        pushUndoState(initialUndoState)
+        draftSlotDragState?.didPushUndo = true
+    }
+
+    private var settingsWindow: NSWindow? {
+        NSApp.windows.first { $0.identifier?.rawValue == "settings" || $0.title == "DockMover" }
     }
 
     private func startWatchingWorkspace() {
@@ -720,6 +905,7 @@ private enum DefaultsKey {
     static let draftEmptySlotSizeForAll = "DockMover.draftEmptySlotSizeForAll"
     static let dockRestartMode = "DockMover.dockRestartMode"
     static let dockRestartModeDefaultVersion = "DockMover.dockRestartModeDefaultVersion"
+    static let settingsShortcut = "DockMover.settingsShortcut"
 }
 
 private struct UndoState: Equatable {
@@ -727,6 +913,16 @@ private struct UndoState: Equatable {
     let draftReservesEmptySlotsForAll: Bool
     let draftEmptySlotSizeForAll: DockEmptySlotSize
     let dockRestartMode: DockRestartMode
+}
+
+private enum DraftSlotReorderUndoMode {
+    case normal
+    case interactiveDrag
+}
+
+private struct DraftSlotDragState {
+    let initialUndoState: UndoState
+    var didPushUndo = false
 }
 
 private extension Array where Element == RunningDockApp {

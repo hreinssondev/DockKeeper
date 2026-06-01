@@ -62,7 +62,7 @@ struct ContentView: View {
                 }
 
                 Menu {
-                    ForEach(model.runningApps) { app in
+                    ForEach(model.unmanagedRunningApps) { app in
                         Button(app.label) {
                             model.addRunningApp(app)
                         }
@@ -73,42 +73,6 @@ struct ContentView: View {
             } label: {
                 Label("Add app", systemImage: "plus")
             }
-
-            Menu {
-                Button {
-                    model.setReserveEmptySlotsForAll(true)
-                } label: {
-                    Label(
-                        "For all apps not running",
-                        systemImage: model.draftReservesEmptySlotsForAll ? "checkmark" : "circle"
-                    )
-                }
-
-                Button {
-                    model.setReserveEmptySlotsForAll(false)
-                } label: {
-                    Label(
-                        "Only selected",
-                        systemImage: model.draftReservesEmptySlotsForAll ? "circle" : "checkmark"
-                    )
-                }
-            } label: {
-                Label("Empty Slots", systemImage: "square.dashed")
-            }
-            .help("Choose which fake Dock apps reserve empty slots while not running")
-
-            Menu {
-                ForEach(DockEmptySlotSize.allCases) { size in
-                    Button {
-                        model.setEmptySlotSizeForAll(size)
-                    } label: {
-                        Label(size.label, systemImage: size == .half ? "square.lefthalf.filled" : "square")
-                    }
-                }
-            } label: {
-                Label(model.draftEmptySlotSizeForAll.label, systemImage: "arrow.left.and.right")
-            }
-            .help("Choose the size for global empty slots")
 
             Menu {
                 ForEach(DockRestartMode.allCases) { mode in
@@ -126,6 +90,8 @@ struct ContentView: View {
                 Label("Refresh Speed", systemImage: "arrow.triangle.2.circlepath")
             }
             .help("Choose how aggressively DockMover refreshes the real Dock")
+
+            settingsShortcutControl
 
             Spacer()
 
@@ -153,11 +119,30 @@ struct ContentView: View {
         .disabled(model.isApplying)
     }
 
+    private var settingsShortcutControl: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("Settings Shortcut")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            ShortcutRecorder(shortcut: model.settingsShortcut) { shortcut in
+                model.setSettingsShortcut(shortcut)
+            }
+            .frame(width: 184, height: 32)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.leading, 4)
+        .help("Click, press shortcut, then press Enter to save")
+    }
+
 }
 
 private struct FakeDockView: View {
     @ObservedObject var model: DockMoverModel
     @State private var showsTargetDockInfo = false
+    @State private var draggedSlotID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -193,61 +178,36 @@ private struct FakeDockView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .bottom, spacing: 10) {
                     ForEach(model.draftSlots) { slot in
-                        FakeDockIcon(
-                            slot: slot,
-                            isRunning: model.runningState(for: slot),
-                            reservesEmptySlot: model.draftReservesEmptySlotsForAll || slot.reservesEmptySlot,
-                            emptySlotSize: slot.reservesEmptySlot ? slot.reservedEmptySlotSize : model.draftEmptySlotSizeForAll
-                        )
-                        .onDrag {
-                            NSItemProvider(object: slot.id.uuidString as NSString)
-                        }
-                        .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                            move(providers, before: slot.id)
-                        }
-                        .contextMenu {
-                            Button(slot.isPermanent ? "Show Only While Running" : "Keep in Dock") {
-                                model.togglePermanent(slot)
+                        dockIcon(for: slot)
+                            .onDrag {
+                                draggedSlotID = slot.id
+                                model.beginDraftSlotDrag(sourceID: slot.id)
+                                return dragProvider(for: slot)
+                            } preview: {
+                                Color.clear
+                                    .frame(width: 1, height: 1)
                             }
-
-                            Menu("Reserve Empty Slot") {
-                                Button {
-                                    model.setReserveEmptySlot(slot, size: .full)
-                                } label: {
-                                    Label("Full Size", systemImage: "square")
-                                }
-
-                                Button {
-                                    model.setReserveEmptySlot(slot, size: .half)
-                                } label: {
-                                    Label("Half Size", systemImage: "square.lefthalf.filled")
-                                }
-
-                                if slot.reservesEmptySlot {
-                                    Divider()
-
-                                    Button {
-                                        model.setReserveEmptySlot(slot, size: nil)
-                                    } label: {
-                                        Label("Do Not Reserve", systemImage: "xmark")
-                                    }
-                                }
+                            .onDrop(
+                                of: [.plainText],
+                                delegate: DockSlotDropDelegate(
+                                    targetID: slot.id,
+                                    model: model,
+                                    draggedSlotID: $draggedSlotID
+                                )
+                            )
+                            .contextMenu {
+                                contextMenu(for: slot)
                             }
-
-                            Divider()
-
-                            Button(role: .destructive) {
-                                model.removeSlot(slot)
-                            } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                        }
                     }
 
                     EndDropTarget()
-                        .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                            moveToEnd(providers)
-                        }
+                        .onDrop(
+                            of: [.plainText],
+                            delegate: EndDockDropDelegate(
+                                model: model,
+                                draggedSlotID: $draggedSlotID
+                            )
+                        )
                 }
                 .padding(10)
                 .frame(minHeight: 92)
@@ -260,38 +220,150 @@ private struct FakeDockView: View {
         }
     }
 
-    private func move(_ providers: [NSItemProvider], before targetID: UUID) -> Bool {
-        loadDraggedSlotID(from: providers) { sourceID in
-            model.moveDraftSlot(sourceID: sourceID, before: targetID)
+    private func dockIcon(for slot: DockAppSlot) -> FakeDockIcon {
+        FakeDockIcon(
+            slot: slot,
+            isRunning: model.runningState(for: slot),
+            reservesEmptySlot: model.draftReservesEmptySlotsForAll || slot.reservesEmptySlot,
+            emptySlotSize: slot.reservesEmptySlot ? slot.reservedEmptySlotSize : model.draftEmptySlotSizeForAll
+        )
+    }
+
+    @ViewBuilder
+    private func contextMenu(for slot: DockAppSlot) -> some View {
+        Button(slot.isPermanent ? "Show Only While Running" : "Keep in Dock") {
+            model.togglePermanent(slot)
+        }
+
+        Menu("Reserve Empty Slot") {
+            Button {
+                model.setReserveEmptySlot(slot, size: .full)
+            } label: {
+                Label("Full Size", systemImage: "square")
+            }
+
+            Button {
+                model.setReserveEmptySlot(slot, size: .half)
+            } label: {
+                Label("Half Size", systemImage: "square.lefthalf.filled")
+            }
+
+            if slot.reservesEmptySlot {
+                Divider()
+
+                Button {
+                    model.setReserveEmptySlot(slot, size: nil)
+                } label: {
+                    Label("Do Not Reserve", systemImage: "xmark")
+                }
+            }
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            model.removeSlot(slot)
+        } label: {
+            Label("Remove", systemImage: "trash")
         }
     }
 
-    private func moveToEnd(_ providers: [NSItemProvider]) -> Bool {
-        loadDraggedSlotID(from: providers) { sourceID in
-            model.moveDraftSlotToEnd(sourceID: sourceID)
+    private func dragProvider(for slot: DockAppSlot) -> NSItemProvider {
+        let provider = NSItemProvider(object: slot.id.uuidString as NSString)
+        provider.suggestedName = slot.label
+        return provider
+    }
+}
+
+private struct DockSlotDropDelegate: DropDelegate {
+    let targetID: UUID
+    let model: DockMoverModel
+    @Binding var draggedSlotID: UUID?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.plainText])
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedSlotID, draggedSlotID != targetID else {
+            return
+        }
+
+        withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.86, blendDuration: 0.12)) {
+            model.moveDraftSlotDuringDrag(sourceID: draggedSlotID, over: targetID)
         }
     }
 
-    private func loadDraggedSlotID(
-        from providers: [NSItemProvider],
-        completion: @escaping @MainActor (UUID) -> Void
-    ) -> Bool {
-        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else {
-            return false
-        }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
 
-        provider.loadObject(ofClass: NSString.self) { object, _ in
-            guard let string = object as? String ?? (object as? NSString).map(String.init),
-                  let sourceID = UUID(uuidString: string) else {
-                return
-            }
-
-            Task { @MainActor in
-                completion(sourceID)
+    func performDrop(info: DropInfo) -> Bool {
+        if draggedSlotID == nil {
+            loadDraggedSlotID(from: info) { sourceID in
+                model.moveDraftSlot(sourceID: sourceID, before: targetID)
             }
         }
 
+        model.endDraftSlotDrag()
+        draggedSlotID = nil
         return true
+    }
+}
+
+private struct EndDockDropDelegate: DropDelegate {
+    let model: DockMoverModel
+    @Binding var draggedSlotID: UUID?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.plainText])
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedSlotID else {
+            return
+        }
+
+        withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.86, blendDuration: 0.12)) {
+            model.moveDraftSlotToEndDuringDrag(sourceID: draggedSlotID)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        if draggedSlotID == nil {
+            loadDraggedSlotID(from: info) { sourceID in
+                model.moveDraftSlotToEnd(sourceID: sourceID)
+            }
+        }
+
+        model.endDraftSlotDrag()
+        draggedSlotID = nil
+        return true
+    }
+}
+
+private func loadDraggedSlotID(
+    from info: DropInfo,
+    completion: @escaping @MainActor (UUID) -> Void
+) {
+    guard let provider = info.itemProviders(for: [.plainText])
+        .first(where: { $0.canLoadObject(ofClass: NSString.self) }) else {
+        return
+    }
+
+    provider.loadObject(ofClass: NSString.self) { object, _ in
+        guard let string = object as? String ?? (object as? NSString).map(String.init),
+              let sourceID = UUID(uuidString: string) else {
+            return
+        }
+
+        Task { @MainActor in
+            completion(sourceID)
+        }
     }
 }
 
