@@ -1,5 +1,1 @@
-
-https://github.com/user-attachments/assets/757c4bcc-e8c2-43bb-a317-c75ea85cf8e9
-
-The Dock auto arranger thats actually doesnt get in your way.. 
-
+<img width="1512" height="982" alt="Screenshot 2026-05-31 at 17 49 22" src="https://github.com/user-attachments/assets/df9304ba-d69f-473a-8fda-f826cc39ee64" />
