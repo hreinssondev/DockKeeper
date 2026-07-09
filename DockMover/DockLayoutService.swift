@@ -9,7 +9,7 @@ struct DockTileSnapshot {
 }
 
 struct DockApplyResult {
-    let backupURL: URL
+    let backupURL: URL?
 }
 
 enum DockRestartMode: String, CaseIterable, Identifiable {
@@ -88,6 +88,7 @@ final class DockLayoutService {
         runningApps: [RunningDockApp],
         reserveEmptySlotsForAll: Bool,
         emptySlotSizeForAll: DockEmptySlotSize,
+        allowStackableGaps: Bool,
         restartMode: DockRestartMode
     ) throws -> DockApplyResult {
         var plist = try readDockPlist()
@@ -99,28 +100,38 @@ final class DockLayoutService {
 
         let runningByBundleID = Dictionary(uniqueKeysWithValues: runningApps.map { ($0.bundleIdentifier, $0) })
 
-        let nextTiles = try slots.compactMap { slot -> [String: Any]? in
+        var nextTiles: [[String: Any]] = []
+        for slot in slots {
             let runningApp = runningByBundleID[slot.bundleIdentifier]
             let shouldReserveEmptySlot = reserveEmptySlotsForAll || slot.reservesEmptySlot
             let emptySlotSize = slot.reservesEmptySlot ? slot.reservedEmptySlotSize : emptySlotSizeForAll
-            guard slot.isPermanent || runningApp != nil || shouldReserveEmptySlot else {
-                return nil
-            }
+            guard slot.isPermanent || runningApp != nil || shouldReserveEmptySlot else { continue }
 
             guard slot.isPermanent || runningApp != nil else {
-                return makeSpacerTile(size: emptySlotSize)
+                if allowStackableGaps {
+                    nextTiles.append(makeSpacerTile(size: emptySlotSize))
+                } else {
+                    appendSpacerTile(size: emptySlotSize, to: &nextTiles)
+                }
+                continue
             }
 
             if let existingTile = existingByBundleID[slot.bundleIdentifier] {
-                return existingTile
+                nextTiles.append(existingTile)
+                continue
             }
 
-            return try makeTile(for: slot, runningApp: runningApp)
+            nextTiles.append(try makeTile(for: slot, runningApp: runningApp))
         }
 
-        let backupURL = try backupCurrentDock()
+        if try dockPlistAlreadyMatches(plist, persistentApps: nextTiles) {
+            return DockApplyResult(backupURL: nil)
+        }
+
         plist["persistent-apps"] = nextTiles
         plist["show-recents"] = false
+
+        let backupURL = try backupCurrentDock()
         try importDockPlist(plist)
         try restartDock(mode: restartMode)
         return DockApplyResult(backupURL: backupURL)
@@ -173,6 +184,10 @@ final class DockLayoutService {
     func readPersistentAppTiles() throws -> [DockTileSnapshot] {
         let plist = try readDockPlist()
         return persistentAppTiles(from: plist)
+    }
+
+    func currentPersistentAppBundleIdentifiers() throws -> Set<String> {
+        Set(try readPersistentAppTiles().map(\.bundleIdentifier))
     }
 
     private func persistentAppTiles(from plist: [String: Any]) -> [DockTileSnapshot] {
@@ -241,12 +256,34 @@ final class DockLayoutService {
         ]
     }
 
+    private func appendSpacerTile(size: DockEmptySlotSize, to tiles: inout [[String: Any]]) {
+        if size == .half,
+           tiles.last?["tile-type"] as? String == DockEmptySlotSize.half.dockTileType {
+            return
+        }
+
+        tiles.append(makeSpacerTile(size: size))
+    }
+
     private func importDockPlist(_ plist: [String: Any]) throws {
         try ensureApplicationSupport()
         let tempURL = applicationSupportURL.appendingPathComponent("next-com.apple.dock.plist")
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try data.write(to: tempURL, options: .atomic)
         try runProcess("/usr/bin/defaults", arguments: ["import", dockDomain, tempURL.path])
+    }
+
+    private func dockPlistAlreadyMatches(_ plist: [String: Any], persistentApps: [[String: Any]]) throws -> Bool {
+        guard let currentPersistentApps = plist["persistent-apps"] as? [[String: Any]] else {
+            return false
+        }
+
+        return try propertyListData(for: currentPersistentApps) == propertyListData(for: persistentApps)
+            && plist["show-recents"] as? Bool == false
+    }
+
+    private func propertyListData(for value: Any) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0)
     }
 
     private func restartDock(mode: DockRestartMode) throws {

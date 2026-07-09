@@ -91,6 +91,10 @@ struct ContentView: View {
             }
             .help("Choose how aggressively DockMover refreshes the real Dock")
 
+            cpuModeControl
+
+            stackableGapsControl
+
             settingsShortcutControl
 
             Spacer()
@@ -117,6 +121,49 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
         }
         .disabled(model.isApplying)
+    }
+
+    private var cpuModeControl: some View {
+        Menu {
+            ForEach(DockMoverCPUMode.allCases) { mode in
+                Button {
+                    model.setCPUMode(mode)
+                } label: {
+                    Label(
+                        mode.label,
+                        systemImage: model.cpuMode == mode ? "checkmark" : "circle"
+                    )
+                }
+            }
+        } label: {
+            Label("CPU Mode", systemImage: "cpu")
+        }
+        .help("Choose whether DockMover polls running apps or relies on launch and quit events")
+    }
+
+    private var stackableGapsControl: some View {
+        Menu {
+            Button {
+                model.setAllowStackableGaps(true)
+            } label: {
+                Label(
+                    "Yes",
+                    systemImage: model.allowStackableGaps ? "checkmark" : "circle"
+                )
+            }
+
+            Button {
+                model.setAllowStackableGaps(false)
+            } label: {
+                Label(
+                    "No",
+                    systemImage: model.allowStackableGaps ? "circle" : "checkmark"
+                )
+            }
+        } label: {
+            Label("Allow stackable gaps", systemImage: "square.stack.3d.up")
+        }
+        .help("Choose whether adjacent half-size empty slots can combine into larger gaps")
     }
 
     private var settingsShortcutControl: some View {

@@ -218,7 +218,7 @@ final class GlobalShortcutRegistrar {
     fileprivate func handleEvent(_ event: EventRef?) -> OSStatus {
         guard let event,
               GetEventKind(event) == UInt32(kEventHotKeyPressed) else {
-            return noErr
+            return OSStatus(eventNotHandledErr)
         }
 
         var hotKeyID = EventHotKeyID(signature: 0, id: 0)
@@ -235,7 +235,7 @@ final class GlobalShortcutRegistrar {
         guard status == noErr,
               hotKeyID.signature == hotKeySignature,
               hotKeyID.id == hotKeyIdentifier else {
-            return noErr
+            return OSStatus(eventNotHandledErr)
         }
 
         action?()
