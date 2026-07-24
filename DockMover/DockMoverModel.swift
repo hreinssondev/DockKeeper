@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 @MainActor
 final class DockMoverModel: ObservableObject {
     private enum SettingsWindowDefaultFrame {
-        static let minContentSize = CGSize(width: 720, height: 320)
-        static let contentHeight: CGFloat = 320
+        static let minContentSize = CGSize(width: 720, height: 120)
+        static let fallbackContentHeight: CGFloat = 240
     }
 
     @Published var isEnabled: Bool {
@@ -30,7 +30,7 @@ final class DockMoverModel: ObservableObject {
     @Published private(set) var draftEmptySlotSizeForAll: DockEmptySlotSize = .full
     @Published private(set) var dockRestartMode: DockRestartMode = .fast
     @Published private(set) var allowStackableGaps = false
-    @Published private(set) var cpuMode: DockMoverCPUMode = .defaultMode
+    @Published private(set) var cpuMode: DockMoverCPUMode = .lowCPU
     @Published private(set) var settingsShortcut: DockMoverShortcut = .settingsDefault
     @Published private(set) var canUndo = false
 
@@ -63,13 +63,9 @@ final class DockMoverModel: ObservableObject {
     init() {
         isEnabled = defaults.bool(forKey: DefaultsKey.isEnabled)
         settingsShortcut = loadSettingsShortcut()
-        dockRestartMode = loadDockRestartMode(forKey: DefaultsKey.dockRestartMode) ?? .fast
+        dockRestartMode = .fast
         allowStackableGaps = defaults.bool(forKey: DefaultsKey.allowStackableGaps)
-        cpuMode = loadCPUMode(forKey: DefaultsKey.cpuMode) ?? .defaultMode
-        if defaults.integer(forKey: DefaultsKey.dockRestartModeDefaultVersion) < 1 {
-            dockRestartMode = .fast
-            defaults.set(1, forKey: DefaultsKey.dockRestartModeDefaultVersion)
-        }
+        cpuMode = .lowCPU
         loadSlots()
         refreshRunningApps()
         lastManagedRunningBundleIdentifiers = managedRunningBundleIdentifiers
@@ -217,16 +213,18 @@ final class DockMoverModel: ObservableObject {
             window.zoom(nil)
         }
 
+        let contentHeight = smallestSettingsContentHeight(for: window)
+
         guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else {
             window.setContentSize(
-                CGSize(width: SettingsWindowDefaultFrame.minContentSize.width, height: SettingsWindowDefaultFrame.contentHeight)
+                CGSize(width: SettingsWindowDefaultFrame.minContentSize.width, height: contentHeight)
             )
             window.center()
             return
         }
 
         window.setContentSize(
-            CGSize(width: visibleFrame.width, height: SettingsWindowDefaultFrame.contentHeight)
+            CGSize(width: visibleFrame.width, height: contentHeight)
         )
 
         let frame = window.frame
@@ -239,6 +237,13 @@ final class DockMoverModel: ObservableObject {
             ),
             display: true
         )
+    }
+
+    // Smallest height that still fits the settings content, so the window
+    // opens as short as possible while staying full width.
+    private func smallestSettingsContentHeight(for window: NSWindow) -> CGFloat {
+        let fittingHeight = window.contentView?.fittingSize.height ?? 0
+        return fittingHeight > 0 ? fittingHeight : SettingsWindowDefaultFrame.fallbackContentHeight
     }
 
     func quit() {
@@ -296,6 +301,18 @@ final class DockMoverModel: ObservableObject {
     }
 
     func addAppFromPanel() {
+        // Defer the panel to the next run-loop tick so the menu that triggered
+        // this action can fully dismiss first. Presenting the modal while the
+        // menu is still tracking can make the panel lose focus or return
+        // cancelled, so the chosen app never gets added.
+        Task { @MainActor in
+            presentAddAppPanel()
+        }
+    }
+
+    private func presentAddAppPanel() {
+        NSApp.activate(ignoringOtherApps: true)
+
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.applicationBundle]
         panel.canChooseDirectories = false
@@ -476,17 +493,6 @@ final class DockMoverModel: ObservableObject {
         }
     }
 
-    func setDockRestartMode(_ mode: DockRestartMode) {
-        guard dockRestartMode != mode else {
-            return
-        }
-
-        pushUndoState()
-        dockRestartMode = mode
-        persist()
-        status = "Dock refresh will use \(mode.statusLabel)"
-    }
-
     func setAllowStackableGaps(_ isAllowed: Bool) {
         guard allowStackableGaps != isAllowed else {
             return
@@ -499,20 +505,6 @@ final class DockMoverModel: ObservableObject {
             ? "Half-size empty slots can stack into larger gaps"
             : "Adjacent half-size empty slots will collapse to one half gap"
         scheduleApply(reason: "Changed stackable gaps")
-    }
-
-    func setCPUMode(_ mode: DockMoverCPUMode) {
-        guard cpuMode != mode else {
-            return
-        }
-
-        pushUndoState()
-        cpuMode = mode
-        configureRunningAppsPolling()
-        refreshRunningApps(forcePublish: true)
-        lastManagedRunningBundleIdentifiers = managedRunningBundleIdentifiers
-        persist()
-        status = mode.statusLabel
     }
 
     func undoLastChange() {
@@ -605,25 +597,13 @@ final class DockMoverModel: ObservableObject {
         return DockEmptySlotSize(rawValue: rawValue)
     }
 
-    private func loadDockRestartMode(forKey key: String) -> DockRestartMode? {
-        guard let rawValue = defaults.string(forKey: key) else {
-            return nil
-        }
-
-        return DockRestartMode(rawValue: rawValue)
-    }
-
-    private func loadCPUMode(forKey key: String) -> DockMoverCPUMode? {
-        guard let rawValue = defaults.string(forKey: key) else {
-            return nil
-        }
-
-        return DockMoverCPUMode(rawValue: rawValue)
-    }
-
     private func loadSettingsShortcut() -> DockMoverShortcut {
         guard let data = defaults.data(forKey: DefaultsKey.settingsShortcut),
               let shortcut = try? JSONDecoder().decode(DockMoverShortcut.self, from: data) else {
+            return .settingsDefault
+        }
+
+        if shortcut == .legacySettingsDefault {
             return .settingsDefault
         }
 
@@ -1289,7 +1269,6 @@ private enum DefaultsKey {
     static let emptySlotSizeForAll = "DockMover.emptySlotSizeForAll"
     static let draftEmptySlotSizeForAll = "DockMover.draftEmptySlotSizeForAll"
     static let dockRestartMode = "DockMover.dockRestartMode"
-    static let dockRestartModeDefaultVersion = "DockMover.dockRestartModeDefaultVersion"
     static let allowStackableGaps = "DockMover.allowStackableGaps"
     static let cpuMode = "DockMover.cpuMode"
     static let settingsShortcut = "DockMover.settingsShortcut"

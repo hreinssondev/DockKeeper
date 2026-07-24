@@ -7,11 +7,6 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(18)
-
-            Divider()
-
             toolbar
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
@@ -24,36 +19,8 @@ struct ContentView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "dock.rectangle")
-                .font(.system(size: 28, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(model.isEnabled ? .blue : .secondary)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("DockMover")
-                    .font(.title2.weight(.semibold))
-                Text(model.status)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Spacer()
-
-            if model.isApplying {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            Toggle("Enabled", isOn: $model.isEnabled)
-                .toggleStyle(.switch)
-        }
-    }
-
     private var toolbar: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .bottom, spacing: 10) {
             Menu {
                 Button {
                     model.addAppFromPanel()
@@ -73,29 +40,15 @@ struct ContentView: View {
             } label: {
                 Label("Add app", systemImage: "plus")
             }
-
-            Menu {
-                ForEach(DockRestartMode.allCases) { mode in
-                    Button {
-                        model.setDockRestartMode(mode)
-                    } label: {
-                        Label(
-                            "\(mode.label) Restart",
-                            systemImage: model.dockRestartMode == mode ? "checkmark" : "circle"
-                        )
-                    }
-                    .help(mode == .fast ? "Use a forceful Dock restart that can come back faster but is more abrupt" : "Use the standard Dock restart")
-                }
-            } label: {
-                Label("Refresh Speed", systemImage: "arrow.triangle.2.circlepath")
-            }
-            .help("Choose how aggressively DockMover refreshes the real Dock")
-
-            cpuModeControl
+            .disabled(model.isApplying)
 
             stackableGapsControl
+                .disabled(model.isApplying)
+
+            Spacer()
 
             settingsShortcutControl
+                .disabled(model.isApplying)
 
             Spacer()
 
@@ -104,41 +57,30 @@ struct ContentView: View {
             } label: {
                 Label("Undo", systemImage: "arrow.uturn.backward")
             }
-            .disabled(!model.canUndo)
+            .disabled(!model.canUndo || model.isApplying)
 
             Button {
                 model.applyNow()
             } label: {
                 Label("Apply Saved", systemImage: "checkmark.circle")
             }
+            .disabled(model.isApplying)
 
-            Button {
-                model.saveDock()
-            } label: {
-                Label("Save Dock", systemImage: "tray.and.arrow.down")
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-        }
-        .disabled(model.isApplying)
-    }
+            VStack(alignment: .trailing, spacing: 6) {
+                Toggle("Enabled", isOn: $model.isEnabled)
+                    .toggleStyle(.switch)
+                    .focusable(false)
 
-    private var cpuModeControl: some View {
-        Menu {
-            ForEach(DockMoverCPUMode.allCases) { mode in
                 Button {
-                    model.setCPUMode(mode)
+                    model.saveDock()
                 } label: {
-                    Label(
-                        mode.label,
-                        systemImage: model.cpuMode == mode ? "checkmark" : "circle"
-                    )
+                    Label("Save target dock", systemImage: "tray.and.arrow.down")
                 }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isApplying)
             }
-        } label: {
-            Label("CPU Mode", systemImage: "cpu")
         }
-        .help("Choose whether DockMover polls running apps or relies on launch and quit events")
     }
 
     private var stackableGapsControl: some View {
@@ -156,19 +98,19 @@ struct ContentView: View {
                 model.setAllowStackableGaps(false)
             } label: {
                 Label(
-                    "No",
+                    "Max one gap at all times",
                     systemImage: model.allowStackableGaps ? "circle" : "checkmark"
                 )
             }
         } label: {
-            Label("Allow stackable gaps", systemImage: "square.stack.3d.up")
+            Label("Allow multiple stacking gaps in dock", systemImage: "square.stack.3d.up")
         }
         .help("Choose whether adjacent half-size empty slots can combine into larger gaps")
     }
 
     private var settingsShortcutControl: some View {
         HStack(alignment: .center, spacing: 8) {
-            Text("Settings Shortcut")
+            Text("Open this window shortcut")
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -200,12 +142,12 @@ private struct FakeDockView: View {
                 Button {
                     showsTargetDockInfo.toggle()
                 } label: {
-                    Image(systemName: "info.circle")
+                    Image(systemName: "questionmark.circle")
                 }
                 .buttonStyle(.plain)
                 .help("Target Dock info")
                 .popover(isPresented: $showsTargetDockInfo, arrowEdge: .top) {
-                    Text("The fake dock is what the dock layout will be if all apps are running at the same time, it will always try to get as close to that target layout as much as possible.")
+                    Text("The Target/fake dock is what the dock layout will be if all apps are running at the same time. Placement of apps follows the fake dock layout as much as possible given whats open at the time.")
                         .font(.body)
                         .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)

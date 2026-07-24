@@ -37,6 +37,7 @@ final class ShortcutRecorderTextField: NSTextField {
 
     private var isRecordingShortcut = false
     private var pendingShortcut: DockMoverShortcut?
+    private var keyDownMonitor: Any?
 
     override var acceptsFirstResponder: Bool {
         true
@@ -56,13 +57,19 @@ final class ShortcutRecorderTextField: NSTextField {
         configure()
     }
 
+    deinit {
+        removeKeyDownMonitor()
+    }
+
     override func mouseDown(with event: NSEvent) {
         startRecording()
         window?.makeFirstResponder(self)
     }
 
     override func becomeFirstResponder() -> Bool {
-        startRecording()
+        // Accept focus, but only begin recording from an explicit mouse click
+        // (handled in mouseDown). This prevents the recorder from capturing
+        // keys just because the window handed it first responder on open.
         return true
     }
 
@@ -74,29 +81,9 @@ final class ShortcutRecorderTextField: NSTextField {
     }
 
     override func keyDown(with event: NSEvent) {
-        guard isRecordingShortcut else {
+        if !handleRecordingKeyDown(event) {
             super.keyDown(with: event)
-            return
         }
-
-        if DockMoverShortcut.isCommitKey(event.keyCode) {
-            commitPendingShortcut()
-            return
-        }
-
-        if DockMoverShortcut.isCancelKey(event.keyCode) {
-            stopRecording()
-            window?.makeFirstResponder(nil)
-            return
-        }
-
-        guard let shortcut = DockMoverShortcut(event: event) else {
-            NSSound.beep()
-            return
-        }
-
-        pendingShortcut = shortcut
-        refreshDisplay()
     }
 
     func refreshDisplay() {
@@ -141,15 +128,73 @@ final class ShortcutRecorderTextField: NSTextField {
     }
 
     private func startRecording() {
+        guard !isRecordingShortcut else {
+            installKeyDownMonitorIfNeeded()
+            return
+        }
+
         isRecordingShortcut = true
         pendingShortcut = nil
+        installKeyDownMonitorIfNeeded()
         refreshDisplay()
     }
 
     private func stopRecording() {
         isRecordingShortcut = false
         pendingShortcut = nil
+        removeKeyDownMonitor()
         refreshDisplay()
+    }
+
+    private func installKeyDownMonitorIfNeeded() {
+        guard keyDownMonitor == nil else {
+            return
+        }
+
+        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  self.isRecordingShortcut,
+                  self.window?.isKeyWindow == true else {
+                return event
+            }
+
+            return self.handleRecordingKeyDown(event) ? nil : event
+        }
+    }
+
+    private func removeKeyDownMonitor() {
+        guard let keyDownMonitor else {
+            return
+        }
+
+        NSEvent.removeMonitor(keyDownMonitor)
+        self.keyDownMonitor = nil
+    }
+
+    private func handleRecordingKeyDown(_ event: NSEvent) -> Bool {
+        guard isRecordingShortcut else {
+            return false
+        }
+
+        if DockMoverShortcut.isCommitKey(event.keyCode) {
+            commitPendingShortcut()
+            return true
+        }
+
+        if DockMoverShortcut.isCancelKey(event.keyCode) {
+            stopRecording()
+            window?.makeFirstResponder(nil)
+            return true
+        }
+
+        guard let shortcut = DockMoverShortcut(event: event) else {
+            NSSound.beep()
+            return true
+        }
+
+        pendingShortcut = shortcut
+        refreshDisplay()
+        return true
     }
 
     private func commitPendingShortcut() {

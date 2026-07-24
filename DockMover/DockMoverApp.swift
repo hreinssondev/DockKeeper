@@ -27,15 +27,15 @@ struct DockMoverApp: App {
                     minWidth: 720,
                     idealWidth: 900,
                     maxWidth: .infinity,
-                    minHeight: 320,
-                    idealHeight: 320,
+                    minHeight: 120,
+                    idealHeight: 240,
                     maxHeight: .infinity
                 )
                 .background(SettingsWindowProbe { window in
                     model.configureSettingsWindow(window)
                 })
         }
-        .defaultSize(width: 900, height: 320)
+        .defaultSize(width: 900, height: 240)
         .defaultPosition(.center)
     }
 }

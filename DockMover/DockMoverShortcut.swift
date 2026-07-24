@@ -3,8 +3,32 @@ import Carbon
 
 struct DockMoverShortcut: Codable, Equatable {
     static let settingsDefault = DockMoverShortcut(
+        keyCode: UInt16(kVK_ANSI_8),
+        modifiers: [.command, .shift]
+    )
+    static let legacySettingsDefault = DockMoverShortcut(
         keyCode: UInt16(kVK_ANSI_9),
         modifiers: [.command, .shift]
+    )
+    static let windowBuddySettingsDefault = DockMoverShortcut(
+        keyCode: UInt16(kVK_ANSI_9),
+        modifiers: [.command, .shift]
+    )
+    static let focusGroupsForwardDefault = DockMoverShortcut(
+        keyCode: UInt16(kVK_ANSI_6),
+        modifiers: [.command, .shift]
+    )
+    static let focusGroupsBackwardDefault = DockMoverShortcut(
+        keyCode: UInt16(kVK_ANSI_6),
+        modifiers: [.command, .shift, .option]
+    )
+    static let secondaryFocusGroupsForwardDefault = DockMoverShortcut(
+        keyCode: UInt16(kVK_ANSI_7),
+        modifiers: [.command, .shift]
+    )
+    static let secondaryFocusGroupsBackwardDefault = DockMoverShortcut(
+        keyCode: UInt16(kVK_ANSI_7),
+        modifiers: [.command, .shift, .option]
     )
 
     private static let supportedModifiers: NSEvent.ModifierFlags = [
@@ -24,8 +48,7 @@ struct DockMoverShortcut: Codable, Equatable {
 
     init?(event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(Self.supportedModifiers)
-        guard !modifiers.isEmpty,
-              Self.keyLabel(for: event.keyCode) != nil else {
+        guard Self.keyLabel(for: event.keyCode) != nil else {
             return nil
         }
 
@@ -83,7 +106,7 @@ struct DockMoverShortcut: Codable, Equatable {
         keyCode == UInt16(kVK_Escape)
     }
 
-    private static func keyLabel(for keyCode: UInt16) -> String? {
+    static func keyLabel(for keyCode: UInt16) -> String? {
         keyLabels[keyCode]
     }
 
@@ -135,10 +158,14 @@ struct DockMoverShortcut: Codable, Equatable {
         UInt16(kVK_ANSI_Slash): "/",
         UInt16(kVK_ANSI_Period): ".",
         UInt16(kVK_ANSI_Grave): "`",
+        UInt16(kVK_ISO_Section): "Key above Tab (§)",
+        UInt16(kVK_CapsLock): "Caps Lock",
+        UInt16(kVK_Return): "Return",
         UInt16(kVK_Space): "Space",
         UInt16(kVK_Tab): "Tab",
         UInt16(kVK_Delete): "Delete",
         UInt16(kVK_ForwardDelete): "Forward Delete",
+        UInt16(kVK_Help): "Help",
         UInt16(kVK_Home): "Home",
         UInt16(kVK_End): "End",
         UInt16(kVK_PageUp): "Page Up",
@@ -166,7 +193,30 @@ struct DockMoverShortcut: Codable, Equatable {
         UInt16(kVK_F17): "F17",
         UInt16(kVK_F18): "F18",
         UInt16(kVK_F19): "F19",
-        UInt16(kVK_F20): "F20"
+        UInt16(kVK_F20): "F20",
+        UInt16(kVK_ANSI_KeypadDecimal): "Keypad .",
+        UInt16(kVK_ANSI_KeypadMultiply): "Keypad ×",
+        UInt16(kVK_ANSI_KeypadPlus): "Keypad +",
+        UInt16(kVK_ANSI_KeypadClear): "Keypad Clear",
+        UInt16(kVK_ANSI_KeypadDivide): "Keypad ÷",
+        UInt16(kVK_ANSI_KeypadEnter): "Keypad Enter",
+        UInt16(kVK_ANSI_KeypadMinus): "Keypad −",
+        UInt16(kVK_ANSI_KeypadEquals): "Keypad =",
+        UInt16(kVK_ANSI_Keypad0): "Keypad 0",
+        UInt16(kVK_ANSI_Keypad1): "Keypad 1",
+        UInt16(kVK_ANSI_Keypad2): "Keypad 2",
+        UInt16(kVK_ANSI_Keypad3): "Keypad 3",
+        UInt16(kVK_ANSI_Keypad4): "Keypad 4",
+        UInt16(kVK_ANSI_Keypad5): "Keypad 5",
+        UInt16(kVK_ANSI_Keypad6): "Keypad 6",
+        UInt16(kVK_ANSI_Keypad7): "Keypad 7",
+        UInt16(kVK_ANSI_Keypad8): "Keypad 8",
+        UInt16(kVK_ANSI_Keypad9): "Keypad 9",
+        UInt16(kVK_JIS_Yen): "JIS Yen",
+        UInt16(kVK_JIS_Underscore): "JIS Underscore",
+        UInt16(kVK_JIS_KeypadComma): "JIS Keypad Comma",
+        UInt16(kVK_JIS_Eisu): "JIS Eisu",
+        UInt16(kVK_JIS_Kana): "JIS Kana"
     ]
 }
 
